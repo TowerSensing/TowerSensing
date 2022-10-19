@@ -1,33 +1,68 @@
 import os
-import sys
 import argparse
+import json
 import numpy as np
 import pandas as pd
-from sketch_compress import *
+
+from src.sketch_compress import *
 
 
-def reject_outliers(data, m=2.):
-    data = np.array(data)
-    d = np.abs(data - np.median(data))
+# Pre-defined tower shapes.
+# Shape #1, #2 and #3 are three recommended shapes in our paper.
+tower_id2shape = {
+    -1: [],  # Disable TowerEncoding
+
+    1: [(4, 4), (8, 1)],          # Shape #1
+    2: [(4, 2), (4, 2), (4, 1)],  # Shape #2
+    3: [(8, 8), (16, 1)],         # Shape #3
+
+    10: [(8, 4), (8, 1)],
+    11: [(8, 4), (4, 1)],
+    12: [(8, 4), (2, 1)],
+    13: [(4, 4), (8, 1)],
+    14: [(4, 4), (4, 1)],
+    15: [(4, 4), (2, 1)],
+    16: [(2, 4), (8, 1)],
+    17: [(2, 4), (4, 1)],
+    18: [(2, 4), (2, 1)],
+}
+
+
+def reject_outliers(arr, m=2.):
+    """
+    Remove outliers from arr.
+    """
+    arr = np.array(arr)
+    d = np.abs(arr - np.median(arr))
     mdev = np.median(d)
     s = d/mdev if mdev else 0.
-    return list(data[s < m])
+    return list(arr[s < m])
 
 
-def save_csv(df, filename, outdir='./results/'):
+def save_csv(df, filename, outdir=None):
+    if outdir is None:
+        outdir = global_cfg["test_result_dir"]
     if not os.path.exists(outdir):
         os.mkdir(outdir)
-    df.to_csv(outdir+filename, index=False, sep=',')
-    print("Results saved to \033[92m{}\033[0m".format(filename))
+    path = os.path.join(outdir, filename)
+    df.to_csv(path, index=False, sep=',')
+    print("Results saved to \033[92m{}\033[0m".format(path))
 
 
 ###### Below are test cases ######
 
-# Top-k Accuracy vs. Compression Ratio
 def test_acc_mem():
+    """
+    Top-k Accuracy vs. Compression Ratio
+    Metrics:
+        Top-k accuracy (ARE)
+    Variables:
+        1. Compression ratio
+        2. Memory (width)
+    """
     wns = [60000, 80000, 100000, 120000]  # Lines
-    ratios = range(2, 11)  # x-axis
-    df_ARE = {**{'ratio': ratios}, **{wn: [] for wn in wns}}
+    ratios = range(1, 11)  # x-axis
+    df_ARE = {'ratio': ratios, **{wn: [] for wn in wns}}
 
     total = len(wns) * len(ratios)
     curr = 0
@@ -37,8 +72,11 @@ def test_acc_mem():
         for ratio in ratios:
             print("\033[1;34m[{} / {}]\033[0m w = {}, ratio = {}".format(curr, total, wn, ratio))
 
-            ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, args.sep_thld,
-                                      args.round_thld, ratio, wn // 250, args.k, args.num_threads)
+            if ratio == 1:
+                ret = no_compress(args.sketch, args.read_num, args.d, w, args.seed, args.k)
+            else:
+                ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, args.sep_thld,
+                                          args.round_thld, ratio, wn // 250, args.k, args.num_threads)
             df_ARE[wn].append(ret['ARE'])
 
             print("ARE = {}".format(ret['ARE']))
@@ -47,10 +85,17 @@ def test_acc_mem():
     save_csv(pd.DataFrame(df_ARE), 'ARE_{}_mem.csv'.format(str(args.sketch)))
 
 
-# Full Accuracy vs. Tower Shape
 def test_fullacc_towershape():
+    """
+    Full Accuracy vs. Tower Shape
+    Metrics:
+        Full accuracy (ARE)
+    Variables:
+        1. Memory (width)
+        2. Tower shape
+    """
     wns = range(200000, 1200000, 100000)  # x-axis
-    df_ARE = {**{'w': wns, 'no_compress': []}, **{tower_settings_id: [] for tower_settings_id in range(3)}}
+    df_ARE = {'w': wns, 'no_compress': [], **{tower_shape_id: [] for tower_shape_id in range(1, 4)}}
 
     total = len(wns) * (3 + 1)
     curr = 0
@@ -65,14 +110,14 @@ def test_fullacc_towershape():
         print("ARE = {}".format(ret['ARE']))
         curr += 1
 
-    for tower_settings_id in range(3):
+    for tower_shape_id in range(1, 4):
         for wn in wns:
-            print("\033[1;34m[{} / {}]\033[0m w = {}, tower shape = #{}".format(curr, total, wn, tower_settings_id+1))
+            print("\033[1;34m[{} / {}]\033[0m w = {}, tower shape = #{}".format(curr, total, wn, tower_shape_id))
 
             w = [wn] * args.d
             ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, 4096, args.round_thld, 4, wn // 250, -1,
-                                      args.num_threads, decompress_method='python', tower_settings_id=tower_settings_id)
-            df_ARE[tower_settings_id].append(ret['ARE'])
+                                      args.num_threads, decompress_method='python', tower_shape=tower_id2shape[tower_shape_id])
+            df_ARE[tower_shape_id].append(ret['ARE'])
 
             print("ARE = {}".format(ret['ARE']))
             curr += 1
@@ -80,60 +125,55 @@ def test_fullacc_towershape():
     save_csv(pd.DataFrame(df_ARE), 'ARE_{}_fullacc_towershape.csv'.format(str(args.sketch)))
 
 
-# Top-k Accuracy vs. Separating Threshold
-def test_acc_separating():
-    sep_thlds = [1024, 2048, 4096, 8192]  # Lines
-    wns = range(60000, 130000, 10000)  # x-axis
-    df_ARE = {**{'w': wns}, **{sep_thld: [] for sep_thld in sep_thlds}}
+def test_acc_separating_k():
+    """
+    Top-k and Full Accuracy vs. Separating Threshold
+    Metrics:
+        Accuracy (ARE)
+    Variables:
+        1. Separating threshold
+        2. k
+    """
+    ks = [500, 1000, 2000, -1]  # Lines
+    sep_thlds = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
+    df_ARE = {'sep_thld': [], **{k: [] for k in ks}}
 
-    total = len(sep_thlds) * len(wns)
+    wn = 1000000
+    w = [wn] * args.d
+
+    total = len(ks) * len(sep_thlds)
     curr = 0
 
     for sep_thld in sep_thlds:
-        for wn in wns:
-            print("\033[1;34m[{} / {}]\033[0m sep_thld = {}, w = {}".format(curr, total, sep_thld, wn))
+        df_ARE['sep_thld'].append(sep_thld)
 
-            w = [wn] * args.d
-            ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed,
-                                      sep_thld, args.round_thld, 2, wn // 250, args.k, args.num_threads)
-            df_ARE[sep_thld].append(ret['ARE'])
+        for k in ks:
+            print("\033[1;34m[{} / {}]\033[0m k = {}, sep_thld = {}".format(curr, total, k, sep_thld))
 
-            print("ARE = {}".format(ret['ARE']))
-            curr += 1
-
-    save_csv(pd.DataFrame(df_ARE), 'ARE_{}_separating.csv'.format(str(args.sketch)))
-
-
-# Full Accuracy vs. Separating Threshold
-def test_fullacc_separating():
-    sep_thlds = [1024, 2048, 4096]  # Lines
-    tower_setting_ids = [4, 5, 2]
-    wns = range(200000, 1200000, 100000)  # x-axis
-    df_ARE = {**{'w': wns}, **{sep_thld: [] for sep_thld in sep_thlds}}
-
-    total = len(sep_thlds) * len(wns)
-    curr = 0
-
-    for i, sep_thld in enumerate(sep_thlds):
-        for wn in wns:
-            print("\033[1;34m[{} / {}]\033[0m sep_thld = {}, w = {}".format(curr, total, sep_thld, wn))
-            w = [wn] * args.d
-
-            ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, sep_thld,
-                                      args.round_thld, 4, wn//250, -1, args.num_threads, tower_settings_id=tower_setting_ids[i])
-            df_ARE[sep_thld].append(ret['ARE'])
+            ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, sep_thld, args.round_thld,
+                                      8, wn // 250, k, args.num_threads, tower_shape=tower_id2shape[1])
+            df_ARE[k].append(ret['ARE'])
 
             print("ARE = {}".format(ret['ARE']))
             curr += 1
 
-    save_csv(pd.DataFrame(df_ARE), 'ARE_{}_full_separating.csv'.format(str(args.sketch)))
+        save_csv(pd.DataFrame(df_ARE), 'X_ARE_{}_separating_k.csv'.format(str(args.sketch)))
+
+    save_csv(pd.DataFrame(df_ARE), 'X_ARE_{}_separating_k.csv'.format(str(args.sketch)))
 
 
-# Top-k Accuracy vs. Rounding Parameter
 def test_acc_rounding():
+    """
+    Top-k Accuracy vs. Rounding Parameter
+    Metrics:
+        Top-k accuracy (ARE)
+    Variables:
+        1. Memory (width)
+        2. Rounding parameter
+    """
     round_thlds = [1, 2, 4, 8]  # Lines
     wns = range(60000, 130000, 10000)  # x-axis
-    df_ARE = {**{'w': wns}, **{round_thld: [] for round_thld in round_thlds}}
+    df_ARE = {'w': wns, **{round_thld: [] for round_thld in round_thlds}}
 
     total = len(round_thlds) * len(wns)
     curr = 0
@@ -153,8 +193,15 @@ def test_acc_rounding():
     save_csv(pd.DataFrame(df_ARE), 'ARE_{}_rounding.csv'.format(str(args.sketch)))
 
 
-# Flexibility of TowerEncoding
 def test_acc_ignore_level():
+    """
+    Flexibility of TowerEncoding
+    Metrics:
+        Full accuracy (ARE)
+    Variables:
+        1. Memory (width)
+        2. Number of layers to be ignored
+    """
     ignore_levels = [2, 1, 0]  # Lines
     wns = range(200000, 1200000, 100000)  # x-axis
     df_ARE = {'w': wns, **{ignore_level: [] for ignore_level in ignore_levels}}
@@ -168,7 +215,7 @@ def test_acc_ignore_level():
             w = [wn] * args.d
 
             ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, 4096, args.round_thld,
-                                      4, wn//250, -1, args.num_threads, tower_settings_id=1, ignore_level=ignore_level)
+                                      4, wn//250, -1, args.num_threads, tower_shape=tower_id2shape[2], ignore_level=ignore_level)
             df_ARE[ignore_level].append(ret['ARE'])
 
             print("ARE = {}".format(ret['ARE']))
@@ -177,179 +224,119 @@ def test_acc_ignore_level():
     save_csv(pd.DataFrame(df_ARE), 'ARE_{}_ignore_level.csv'.format(str(args.sketch)))
 
 
-# Efficiency of TowerEncoding
 def test_time_towerencoding():
+    """
+    Efficiency of TowerEncoding
+    Metrics:
+        1. Compression time
+        2. Recovery time
+    Variables:
+        1. Memory (width)
+        2. Tower shape
+    """
     wns = range(200000, 1200000, 100000)  # x-axis
-    df_comp = {**{'w': []}, **{tower_settings_id: [] for tower_settings_id in range(4)}}
-    df_decomp = {**{'w': []}, **{tower_settings_id: [] for tower_settings_id in range(4)}}
+    df_comp = {'w': [], **{tower_shape_id: [] for tower_shape_id in range(1, 4)}, 'build_secs': []}
+    df_decomp = {'w': [], **{tower_shape_id: [] for tower_shape_id in range(1, 4)}}
 
-    total = len(wns) * 4
+    total = len(wns) * 3
     curr = 0
 
-    # Loop by x-axis first
     for wn in wns:
         w = [wn] * args.d
         df_comp['w'].append(wn)
         df_decomp['w'].append(wn)
 
-        for tower_settings_id in range(4):
-            print("\033[1;34m[{} / {}]\033[0m w = {}, tower shape = #{}".format(curr, total, wn, tower_settings_id+1))
+        for tower_shape_id in range(1, 4):
+            print("\033[1;34m[{} / {}]\033[0m w = {}, tower shape = #{}".format(curr, total, wn, tower_shape_id))
 
+            temp_build = []
             temp_comp = []
             temp_decomp = []
-            for _ in range(10):
-                ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, 4096, args.round_thld, 4, wn // 250, -1, args.num_threads,
-                                          do_query=False, decompress_method='python', tower_settings_id=tower_settings_id)
+            for rep in range(3):
+                ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, 4096, args.round_thld, 4, wn // 250, -1,
+                                          args.num_threads, do_query=False, decompress_method='python', tower_shape=tower_id2shape[tower_shape_id])
                 # Tip: `res = [] * w[i]` to speed up this test
+                temp_build.append(ret['build_secs'])
                 temp_comp.append(ret['tower_comp_secs'])
                 temp_decomp.append(ret['tower_decomp_secs'])
-                print("Compression time = {} s, decompression time = {} s".format(ret['tower_comp_secs'], ret['tower_decomp_secs']))
+                print("({}) Build time = {} s, compression time = {} s, decompression time = {} s".format(
+                    rep, ret['build_secs'], ret['tower_comp_secs'], ret['tower_decomp_secs']))
 
-            df_comp[tower_settings_id].append(np.average(reject_outliers(temp_comp)))
-            df_decomp[tower_settings_id].append(np.average(reject_outliers(temp_decomp)))
+            df_comp[tower_shape_id].append(np.average(reject_outliers(temp_comp)))
+            df_decomp[tower_shape_id].append(np.average(reject_outliers(temp_decomp)))
             curr += 1
+        df_comp['build_secs'].append(np.average(reject_outliers(temp_build)))  # Last time's build time
 
     save_csv(pd.DataFrame(df_comp), 'SECS_{}_tower_comp.csv'.format(str(args.sketch)))
     save_csv(pd.DataFrame(df_decomp), 'SECS_{}_tower_decomp.csv'.format(str(args.sketch)))
 
 
-# Efficiency of SketchSensing
 def test_time_sketchsensing():
+    """
+    Efficiency of SketchSensing
+    Metrics:
+        1. Compression time
+        2. Recovery time
+    Variables:
+        1. Memory (width)
+        2. Compression ratio
+    """
     ratios = [4, 6, 8, 10]  # Lines
     wns = range(60000, 130000, 10000)  # x-axis
-    df_comp = {**{'w': wns}, **{ratio: [] for ratio in ratios}}
-    df_decomp = {**{'w': wns}, **{ratio: [] for ratio in ratios}}
+    df_comp = {'w': wns, **{ratio: [] for ratio in ratios}, 'build_secs': []}
+    df_decomp = {'w': wns, **{ratio: [] for ratio in ratios}}
 
     total = len(ratios) * len(wns)
     curr = 0
 
-    for ratio in ratios:
-        for wn in wns:
+    for wn in wns:
+        for ratio in ratios:
             print("\033[1;34m[{} / {}]\033[0m ratio = {}, w = {}".format(curr, total, ratio, wn))
             w = [wn] * args.d
 
+            temp_build = []
             temp_comp = []
             temp_decomp = []
-            for _ in range(10):
+            for rep in range(3):
                 ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, args.sep_thld,
                                           args.round_thld, ratio, wn // 250, args.k, args.num_threads,
                                           do_query=False, decompress_method='cpp')
+                temp_build.append(ret['build_secs'])
                 temp_comp.append(ret['comp_secs'])
                 temp_decomp.append(ret['decomp_secs'])
-                print("Compression time = {}, decompression time = {}".format(ret['comp_secs'], ret['decomp_secs']))
+                print("({}) Build time = {} s, compression time = {} s, decompression time = {} s".format(
+                    rep, ret['build_secs'], ret['comp_secs'], ret['decomp_secs']))
 
             df_comp[ratio].append(np.average(reject_outliers(temp_comp)))
             df_decomp[ratio].append(np.average(reject_outliers(temp_decomp)))
             curr += 1
+        df_comp['build_secs'].append(np.average(reject_outliers(temp_build)))  # Last time's build time
 
     save_csv(pd.DataFrame(df_comp), 'SECS_{}_sensing_comp.csv'.format(str(args.sketch)))
     save_csv(pd.DataFrame(df_decomp), 'SECS_{}_sensing_decomp.csv'.format(str(args.sketch)))
 
 
-# Efficiency of Privacy-preserving Compression
-def test_time_encryption():
-    def homomorphic(A_frags_ds, y_frags_ds, _):
-        nonlocal encrypt_secs
-        nonlocal decrypt_secs
-        print("Running homomorphic encryption and decryption")
-        context = ts.context(ts.SCHEME_TYPE.BFV, poly_modulus_degree=4096, plain_modulus=1032193)
-
-        counter_cnt = len(y_frags_ds[0]) * 0.05
-
-        y_front_ds = []
-        for i in range(args.d):
-            temp = []
-            for y_frag in y_frags_ds[i]:
-                for j, v in enumerate(y_frag):
-                    if j > counter_cnt:
-                        break
-                    temp.append(v)
-            y_front_ds.append(temp)
-
-        # Encrypt
-        time_start = time.time()
-        y_encrypted_ds = []
-        for i in range(args.d):
-            y_encrypted = ts.bfv_vector(context, y_front_ds[i])
-            y_encrypted_ds.append(y_encrypted)
-        encrypt_secs = time.time() - time_start
-
-        # Decrypt
-        time_start = time.time()
-        for i in range(args.d):
-            y_decrypted = y_encrypted_ds[i].decrypt()
-            # assert all(??)
-        decrypt_secs = time.time() - time_start
-        return A_frags_ds, y_frags_ds
-
-    wns = range(10000, 110000, 10000)  # x-axis
-    df = {'w': wns, 'encrypt': [], 'decrypt': []}
-    ratio = 2
-
-    total = len(wns)
-    curr = 0
-
-    for wn in wns:
-        print("\033[1;34m[{} / {}]\033[0m w = {}".format(curr, total, wn))
-        w = [wn] * args.d
-
-        temp_encrypt = []
-        temp_decrypt = []
-        for _ in range(10):
-            encrypt_secs, decrypt_secs = 0, 0
-            ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, args.sep_thld, args.round_thld, ratio,
-                                      wn // 250, args.k, args.num_threads, decompress_method=None, func=homomorphic)
-            temp_encrypt.append(encrypt_secs)
-            temp_decrypt.append(decrypt_secs)
-            print("Encryption time = {} s, decryption time = {} s".format(encrypt_secs, decrypt_secs))
-
-        df['encrypt'].append(np.average(reject_outliers(temp_encrypt)))
-        df['decrypt'].append(np.average(reject_outliers(temp_decrypt)))
-        curr += 1
-
-    save_csv(pd.DataFrame(df), 'SECS_CM_encrypt_decrypt.csv')
-
-
-def test_acceleration():
-    wns = range(200000, 1200000, 100000)  # x-axis
-    df_comp = {'w': wns, **{'serial': [], 'multithreading': [], 'simd': []}}
-
-    total = len(wns)
-    curr = 0
-
-    for wn in wns:
-        print("\033[1;34m[{} / {}]\033[0m w = {}".format(curr, total, wn))
-        w = [wn] * args.d
-
-        ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, args.sep_thld,
-                                  args.round_thld, 4, wn // 250, -1, 1, do_query=False, decompress_method=None, tower_settings_id=1)
-        df_comp['serial'].append(ret['comp_secs'] + ret['tower_comp_secs'])
-        print("serial: {} s".format(ret['comp_secs'] + ret['tower_comp_secs']))
-
-        ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, args.sep_thld,
-                                  args.round_thld, 4, wn // 250, -1, 18, do_query=False, decompress_method=None, tower_settings_id=1)
-        df_comp['multithreading'].append(ret['comp_secs'] + ret['tower_comp_secs'])
-        print("multithreading: {} s".format(ret['comp_secs'] + ret['tower_comp_secs']))
-
-        ret = compressive_sensing_comp_simd(args.read_num, args.d, w, args.seed, 4)
-        df_comp['simd'].append(ret['total_comp_secs'])
-        print("SIMD: {} s".format(ret['total_comp_secs']))
-
-    save_csv(pd.DataFrame(df_comp), 'SECS_acceleration.csv')
-
-
-# Top-k Accuracy (Comparison with Prior Art)
 def test_acc_algos():
+    """
+    Top-k Accuracy (Comparison with Prior Art)
+    Metrics:
+        Top-k accuracy (ARE)
+    Variables:
+        1. Compression ratio
+        2. Compression method (ours and prior art)
+    """
     ratios = range(2, 11)  # x-axis
-    df_ARE = {'ratio': ratios, 'ours': [], 'hokusai': [], 'elastic': [], 'cluster_reduce': []}
+    df_ARE = {'ratio': ratios, 'ours': [], 'hokusai': [], 'elastic': [], 'cluster_reduce': [], 'no_compress': []}
+
+    ret = no_compress(args.sketch, args.read_num, args.d, args.w, args.seed, args.k)
+    df_ARE['no_compress'] = [ret['ARE']] * len(ratios)
+    print("No compression: ARE = {}".format(ret['ARE']))
 
     total = len(ratios)
     curr = 0
 
     for ratio in ratios:
         print("\033[1;34m[{} / {}]\033[0m ratio = {}".format(curr, total, ratio))
-
-        # no_compress(args.sketch, args.read_num, args.d, args.w, args.seed, args.k)
 
         ret = compressive_sensing(args.sketch, args.read_num, args.d, args.w, args.seed,
                                   args.sep_thld, args.round_thld, ratio, args.w[0] // 250, args.k, args.num_threads)
@@ -375,10 +362,17 @@ def test_acc_algos():
     save_csv(pd.DataFrame(df_ARE), 'ARE_{}_algos.csv'.format(str(args.sketch)))
 
 
-# Full Accuracy (Comparison with Prior Art)
 def test_fullacc_algos():
+    """
+    Full Accuracy (Comparison with Prior Art)
+    Metrics:
+        Full accuracy (ARE)
+    Variables:
+        1. Memory (width)
+        2. Compression method (ours and prior art)
+    """
     wns = range(200000, 1200000, 100000)  # x-axis
-    df_ARE = {'w': wns, 'ours': [], 'hokusai': [], 'elastic': [], 'cluster_reduce': []}
+    df_ARE = {'w': wns, 'ours': [], 'hokusai': [], 'elastic': [], 'cluster_reduce': [], 'no_compress': []}
 
     total = len(wns)
     curr = 0
@@ -387,8 +381,12 @@ def test_fullacc_algos():
         print("\033[1;34m[{} / {}]\033[0m w = {}".format(curr, total, wn))
         w = [wn] * args.d
 
+        ret = no_compress(args.sketch, args.read_num, args.d, w, args.seed, -1)
+        df_ARE['no_compress'].append(ret['ARE'])
+        print("No compression: ARE = {}".format(ret['ARE']))
+
         ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, 4096,
-                                  10, 4, wn // 250, -1, args.num_threads, tower_settings_id=1)
+                                  10, 4, wn // 250, -1, args.num_threads, tower_shape=tower_id2shape[2])
         df_ARE['ours'].append(ret['ARE'])
         print("Compressive sensing: ARE = {}".format(ret['ARE']))
 
@@ -406,13 +404,21 @@ def test_fullacc_algos():
         ret = cluster_reduce(args.sketch, args.read_num, args.d, w, 2, -1, args.cr_method)
         df_ARE['cluster_reduce'].append(ret['ARE'])
         print("Cluster Reduce: ARE = {}".format(ret['ARE']))
+
         curr += 1
 
     save_csv(pd.DataFrame(df_ARE), 'ARE_{}_full_algos.csv'.format(str(args.sketch)))
 
 
-# Top-k Compression Efficiency (Comparison with Prior Art)
 def test_time_algos():
+    """
+    Top-k Compression Efficiency (Comparison with Prior Art)
+    Metrics:
+        Top-k compression time
+    Variables:
+        1. Memory (width)
+        2. Compression method (ours and prior art)
+    """
     wns = range(60000, 130000, 10000)  # x-axis
     df_comp = {'w': wns, 'ours': [], 'hokusai': [], 'elastic': [], 'cluster_reduce': []}
 
@@ -423,8 +429,9 @@ def test_time_algos():
         print("\033[1;34m[{} / {}]\033[0m w = {}".format(curr, total, wn))
         w = [wn] * args.d
 
-        ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, args.sep_thld, args.round_thld,
-                                  4, wn//250, args.k, args.num_threads, do_query=False, decompress_method=None, tower_settings_id=-1)
+        ret = compressive_sensing(
+            args.sketch, args.read_num, args.d, w, args.seed, args.sep_thld, args.round_thld, 4, wn // 250, args.k,
+            args.num_threads, do_query=False, decompress_method=None, tower_shape=[])
         df_comp['ours'].append(ret['comp_secs'])
         print("Compressive sensing: Compression time = {} s".format(ret['comp_secs']))
 
@@ -444,8 +451,15 @@ def test_time_algos():
     save_csv(pd.DataFrame(df_comp), 'SECS_CM_algos.csv')
 
 
-# Full Compression Efficiency (Comparison with Prior Art)
 def test_time_full_algos():
+    """
+    Full Compression Efficiency (Comparison with Prior Art)
+    Metrics:
+        Full compression time
+    Variables:
+        1. Memory (width)
+        2. Compression method (ours and prior art)
+    """
     wns = range(200000, 1200000, 100000)  # x-axis
     df_comp = {'w': wns, 'ours': [], 'hokusai': [], 'elastic': [], 'cluster_reduce': []}
 
@@ -457,7 +471,7 @@ def test_time_full_algos():
         w = [wn] * args.d
 
         # ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, 4096, args.round_thld,
-        #                           4, wn // 250, -1, args.num_threads, do_query=False, decompress_method=None, tower_settings_id=-1)
+        #                           4, wn // 250, -1, args.num_threads, do_query=False, decompress_method=None, tower_shape=[])
         # df_comp['ours'].append(ret['comp_secs'] + ret['tower_comp_secs'])
 
         ret = compressive_sensing_comp_simd(args.read_num, args.d, w, args.seed, 4)
@@ -479,53 +493,6 @@ def test_time_full_algos():
     save_csv(pd.DataFrame(df_comp), 'SECS_CM_full_algos.csv')
 
 
-def test_distributed_app():
-    algos = [CompAlgoType.COMPSEN, CompAlgoType.HOKUSAI, CompAlgoType.ELASTIC, CompAlgoType.CLUSRED]
-    wns = range(10000, 110000, 10000)  # x-axis
-    df_ARE = {'w': [], **{algo: [] for algo in algos}}
-    ratio = 6
-
-    for wn in wns:
-        df_ARE['w'].append(wn)
-
-        for algo in algos:
-            if args.sketch == SketchType.Count and algo == CompAlgoType.ELASTIC:
-                df_ARE[algo].append(np.nan)
-                continue
-
-            w = [wn] * args.d
-            ret = distributed_data_stream(args.sketch, w, args.k, ratio, algo, args.cr_method, -1, 200)
-            print(algo, wn, ret)
-            df_ARE[algo].append(ret['ARE'])
-        save_csv(pd.DataFrame(df_ARE), "ARE_{}_distributed.csv".format(args.sketch))
-
-    save_csv(pd.DataFrame(df_ARE), "ARE_{}_distributed.csv".format(args.sketch))
-
-
-def test_full_distributed_app():
-    algos = [CompAlgoType.COMPSEN, CompAlgoType.HOKUSAI, CompAlgoType.ELASTIC, CompAlgoType.CLUSRED]
-    wns = range(200000, 1200000, 100000)  # x-axis
-    df_ARE = {'w': [], **{algo: [] for algo in algos}}
-
-    for wn in wns:
-        df_ARE['w'].append(wn)
-
-        for algo in algos:
-            ratio = 6 if algo == CompAlgoType.COMPSEN else 2
-            print(wn, algo, ratio)
-            if args.sketch == SketchType.Count and algo == CompAlgoType.ELASTIC:
-                df_ARE[algo].append(np.nan)
-                continue
-
-            w = [wn] * args.d
-            ret = distributed_data_stream(args.sketch, w, 253906, ratio, algo, args.cr_method, 0, 4096)
-            print(algo, wn, ret)
-            df_ARE[algo].append(ret['ARE'])
-        save_csv(pd.DataFrame(df_ARE), "ARE_{}_full_distributed.csv".format(args.sketch))
-
-    save_csv(pd.DataFrame(df_ARE), "ARE_{}_full_distributed.csv".format(args.sketch))
-
-
 def test_shiftbf():
     wns = [500000, 700000, 900000, 1100000]  # Lines
     sbf_sizes = np.array(range(10, 61, 10)) * 8 * 1000  # x-axis
@@ -538,13 +505,20 @@ def test_shiftbf():
             w = [wn] * args.d
 
             ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, 4096, args.round_thld,
-                                      4, wn // 250, -1, args.num_threads, tower_settings_id=0, sbf_size=sbf_size)
+                                      4, wn // 250, -1, args.num_threads, tower_shape=tower_id2shape[1], sbf_size=sbf_size)
             df[wn].append(ret['ARE'])
 
     save_csv(pd.DataFrame(df), 'ARE_{}_shiftbf_verybig.csv'.format(str(args.sketch)))
 
 
 def test_topk_datasets():
+    """
+    Test the accuracy of our method and prior art. Dataset is specified in config.json maunaully.
+    Metrics:
+        Top-k accuracy (ARE)
+    Variables:
+        Compression method (ours and prior art)
+    """
     df = {'compressive_sensing': [], 'elastic': [], 'cluster_reduce': [], 'hokusai': []}
     ratio = 8
 
@@ -567,11 +541,18 @@ def test_topk_datasets():
 
 
 def test_full_datasets():
+    """
+    Test the accuracy of our method and prior art. Dataset is specified in config.json maunaully.
+    Metrics:
+        Full accuracy (ARE)
+    Variables:
+        Compression method (ours and prior art)
+    """
     df = {'compressive_sensing': [], 'elastic': [], 'cluster_reduce': [], 'hokusai': []}
     ratio = 2
 
     ret = compressive_sensing(args.sketch, args.read_num, args.d, args.w, args.seed, 4096,
-                              args.round_thld, ratio, args.w[0] // 250, -1, args.num_threads, tower_settings_id=0)
+                              args.round_thld, ratio, args.w[0] // 250, -1, args.num_threads, tower_shape=tower_id2shape[1])
     df['compressive_sensing'].append(ret['ARE'])
 
     ret = elastic(args.sketch, args.read_num, args.d, args.w, args.seed, ratio, -1)
@@ -582,76 +563,210 @@ def test_full_datasets():
 
     ret = hokusai(args.sketch, args.read_num, args.d, args.w, args.seed, ratio, -1)
     df['hokusai'].append(ret['ARE'])
-    
+
     save_csv(pd.DataFrame(df), 'ARE_full_datasets.csv')
 
 
-def test_algo():
-    ratios = range(2, 11)
-    df = pd.DataFrame({'ratio': ratios})
+def test_billion_dataset():
+    """
+    Test multiple metrics on a billion-scale dataset.
+    Metrics:
+        1. Accuracy (ARE)
+        2. Compression error (CE)
+        3. Compression time
+        4. Decompression time
+    Variables:
+        1. Memory (witdh)
+        2. k
+    """
+    ks = [-1, 5000, 10000, 20000]  # Lines
+    wns = list(range(4000000, 24000000, 2000000))  # x-axis
+    df_ARE = {'w': [], **{k: [] for k in ks}}
+    df_CE = {'w': [], 'CE': []}
+    df_time = {'w': [], 'comp_secs': [], 'decomp_secs': []}
 
-    # Original sketch without compressing
-    original_ARE = no_compress(args.sketch, args.read_num, args.d, args.w, args.seed, args.k)['ARE']
-    # df['no_compress'] = [original_ARE for _ in ratios]
-    print('------------------------------------------')
+    total = len(ks) * len(wns)
+    curr = 0
 
-    if args.algo in ['all', 'cs']:
-        ARE_cs = [compressive_sensing(args.sketch, args.read_num, args.d, args.w, args.seed, args.sep_thld, args.round_thld, r, args.num_frags,
-                                      args.k, args.num_threads, decompress_method=args.decompress_method)['ARE'] for r in ratios]
-        df['compressive_sensing'] = ARE_cs
-        print('ARE_cs', ARE_cs)
+    for wn in wns:
+        df_ARE['w'].append(wn)
+        df_CE['w'].append(wn)
+        df_time['w'].append(wn)
 
-    if args.algo in ['all', 'hokusai']:
-        ARE_hokusai = [hokusai(args.sketch, args.read_num, args.d,
-                               args.w, args.seed, r, args.k)['ARE'] for r in ratios]
-        df['hokusai'] = ARE_hokusai
-        print('ARE_hokusai', ARE_hokusai)
+        k, extra_ks = ks[0], ks[1:]
+        print("\033[1;34m[{} / {}]\033[0m w = {}, ks = {}".format(curr, total, wn, ks))
+        w = [wn] * args.d
+        ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, args.sep_thld, args.round_thld,
+                                  8, wn // 250, k, args.num_threads, tower_shape=tower_id2shape[1], extra_ks=extra_ks)
+        df_ARE[k].append(ret['ARE'])
+        for i, exk in enumerate(extra_ks):
+            df_ARE[exk].append(ret['extra_AREs'][i])
+        df_CE['CE'].append(ret['CE'])
+        df_time['comp_secs'].append(ret['comp_secs'] + ret['tower_comp_secs'])
+        df_time['decomp_secs'].append(0 + ret['tower_decomp_secs'])  # ret['decomp_secs']
 
-    if args.algo in ['all', 'elastic']:
-        # Elastic is not suitable for Count Sketch
-        if args.sketch != SketchType.Count:
-            ARE_elastic = [elastic(args.sketch, args.read_num, args.d, args.w,
-                                   args.seed, r, args.k)['ARE'] for r in ratios]
-            print('ARE_elastic', ARE_elastic)
-        else:
-            ARE_elastic = [np.nan for _ in ratios]
-        df['elastic'] = ARE_elastic
+        print(ret)
+        curr += 1
 
-    if args.algo in ['all', 'cr']:
-        ARE_cr = [cluster_reduce(args.sketch, args.read_num, args.d, args.w,
-                                 r, args.k, 0, args.debug)['ARE'] for r in ratios]
-        df['cluster_reduce'] = ARE_cr
-        print('ARE_cr', ARE_cr)
+        save_csv(pd.DataFrame(df_ARE), "X_billion_{}_ARE.csv".format(str(args.sketch)))
+        save_csv(pd.DataFrame(df_CE), "X_billion_{}_CE.csv".format(str(args.sketch)))
+        save_csv(pd.DataFrame(df_time), "X_billion_{}_time.csv".format(str(args.sketch)))
 
-    save_csv(df, 'ARE_{}_{}_{}_{}_{}_{}_{}.csv'.format(str(args.sketch), args.k,
-             args.d, args.w[0], args.sep_thld, args.round_thld, args.num_frags))
+    save_csv(pd.DataFrame(df_ARE), "X_billion_{}_ARE.csv".format(str(args.sketch)))
+    save_csv(pd.DataFrame(df_CE), "X_billion_{}_CE.csv".format(str(args.sketch)))
+    save_csv(pd.DataFrame(df_time), "X_billion_{}_time.csv".format(str(args.sketch)))
+
+
+def test_build_time():
+    """
+    Metrics:
+        Sketch build time
+    Variables:
+        Memory (witdh)
+    """
+    wns = range(200000, 1200000, 100000)  # x-axis
+    df_build = {'w': wns, 'build_secs': []}
+
+    for wn in wns:
+        w = [wn] * args.d
+        ret = no_compress(args.sketch, args.read_num, args.d, w, args.seed, 10)
+        df_build['build_secs'].append(ret['build_secs'])
+        print(ret)
+
+    save_csv(pd.DataFrame(df_build), 'X_SECS_build.csv')
+
+
+def test_tower_ratio():
+    """
+    Metrics:
+        Full accuracy (ARE)
+    Variables:
+        1. Compression ratio of tower
+        2. Memory (width)
+    """
+    wns = [400000, 800000, 1200000, 1600000]  # Lines
+    tower_shape_ids = [10, 11,   12,   13,   14,  15, 16,   17, 18]  # x-axis
+    sep_thlds = [65536, 4096, 1024, 4096, 256, 64, 1024, 64, 16]
+    real_ratios = [2.78261, 3.04762, 3.2, 4.26667, 4.92308, 5.33333, 5.81818, 7.11111, 8]
+    df_ARE = {'real_ratio': [], **{wn: [] for wn in wns}}
+
+    total = len(wns) * len(tower_shape_ids)
+    curr = 0
+
+    for i, tower_shape_id in enumerate(tower_shape_ids):
+        df_ARE['real_ratio'].append(real_ratios[i])
+        for wn in wns:
+            print("\033[1;34m[{} / {}]\033[0m tower_shapd_id = {} (sep_thld={}), w = {}".format(curr,
+                  total, tower_shape_id, sep_thlds[i], wn))
+            w = [wn] * args.d
+
+            ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, sep_thlds[i], args.round_thld,
+                                      4, wn//250, -1, args.num_threads, tower_shape=tower_id2shape[tower_shape_id])
+            df_ARE[wn].append(ret['ARE'])
+
+            print(ret['ARE'])
+            curr += 1
+
+        save_csv(pd.DataFrame(df_ARE), 'X_ARE_{}_tower_ratio.csv'.format(str(args.sketch)))
+
+    save_csv(pd.DataFrame(df_ARE), 'X_ARE_{}_tower_ratio.csv'.format(str(args.sketch)))
+
+
+def test_only_sensing():
+    """
+    Metrics:
+        Accuracy (ARE)
+    Variables:
+        1. k
+        2. Whether to use TowerEncoding or not
+    """
+    ks = [100, 500, 5000, 50000, -1]  # x-axis
+    sep_thlds = [23000, 9301, 800, 500, 500]
+    wns = [30000, 65000, 90000, 400000, 1000000]
+    tower_shape_ids = [-1, 1]  # Bars
+    df_ARE = {'k': ks, **{tower_shape_id: [] for tower_shape_id in tower_shape_ids}}
+
+    total = len(tower_shape_ids) * len(ks)
+    curr = 1
+
+    for i, k in enumerate(ks):
+        wn = wns[i]
+        w = [wn] * args.d
+        for tower_shape_id in tower_shape_ids:
+            sep_thld = 4096 if tower_shape_id >= 0 else sep_thlds[i]
+            print("\033[1;34m[{} / {}]\033[0m k = {}, tower_shape_id = {}".format(curr, total, k, tower_shape_id))
+
+            ret = compressive_sensing(args.sketch, args.read_num, args.d, w, args.seed, sep_thld, args.round_thld,
+                                      2, wn//250, k, args.num_threads, tower_shape=tower_id2shape[tower_shape_id])
+            df_ARE[tower_shape_id].append(ret['ARE'])
+            print("ARE = {}".format(ret['ARE']))
+
+            curr += 1
+
+    save_csv(pd.DataFrame(df_ARE), 'X_ARE_only_sensing.csv')
+
+
+def test_manual_py():
+    wn = int(15728640 / 4 / args.d)  # 10 MB
+    w = [wn] * args.d
+    sketch = Sketch(args.read_num, args.d, SketchType.CM)
+    for i in range(args.d):
+        sketch.init_arr(i, None, w[i], -1, 997 + i)
+    sketch.insert_dataset()
+    print("no_compress ARE", no_compress(SketchType.CM, args.read_num, args.d, w, args.seed, args.k)['ARE'])
+
+    ratio = 32
+
+    A_frags_ds = []
+    y_frags_ds = []
+    for i in range(args.d):
+        temp = (c_uint * w[i])()
+        sketch.copy_array(i, temp)
+        temp = np.array(temp)
+        for j in range(len(temp)):
+            if temp[j] < args.sep_thld:
+                temp[j] = 0
+        A_frags, y_frags, _ = ts_compress_array(temp, ratio, wn//500)
+        A_frags_ds.append(A_frags)
+        y_frags_ds.append(y_frags)
+
+    sketch_copy = Sketch(args.read_num, args.d, SketchType.CM, is_compsen=True)
+    for i in range(args.d):
+        res, _ = ts_decompress_array(A_frags_ds[i], y_frags_ds[i], has_neg=False)
+        out_data = (c_uint * w[i])(*res)
+        sketch_copy.init_arr(i, out_data, w[i], -1, 997 + i)
+
+    ARE, AAE = sketch_copy.query_dataset(args.k)
+    print("ARE = {}".format(ARE))
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="compressive sensing test for sketches")
-    parser.add_argument('--read_num', default=-1, type=int, help='number of packets read from dataset')
-    parser.add_argument('--k', default=500, type=int, help='report ARE for top-k frequent flows')
-    parser.add_argument('--d', default=3, type=int, help='number of arrays')
-    parser.add_argument('--w', default=[65000, 65000, 65000], type=int,
+    parser = argparse.ArgumentParser(description="TowerSensing test cases")
+    parser.add_argument('--read_num', type=int, default=-1, help='number of packets to read from dataset')
+    parser.add_argument('--k', type=int, default=500, help='report result for top-k frequent flows')
+    parser.add_argument('--d', type=int, default=3, help='number of arrays in a sketch')
+    parser.add_argument('--w', type=int, default=[65000, 65000, 65000],
                         nargs='+', help='number of counters in each array')
-    parser.add_argument('--seed', default=997, type=int, help='base seed')
-    parser.add_argument('--sep_thld', default=9300, type=int, help='separating threshold')
-    parser.add_argument('--round_thld', default=1, type=int, help='round threshold')
-    parser.add_argument('--num_frags', default=300, type=int, help='number of fragments per array')
-    parser.add_argument('--sketch', default=SketchType.CM, type=SketchType.from_string,
-                        choices=list(SketchType), help='sketch type (CM / Count / CU / CMM / CML / CSM)')
-    parser.add_argument('--algo', default='all', type=str, help='compressing algorithm')
-    parser.add_argument('--num_threads', default=8, type=int,
-                        help='number of threads for compressive sensing')
-    parser.add_argument('--cr_method', default=4, type=int, help='compress method for Cluster Reduce')
-    parser.add_argument('--test', default='test_algo', type=str, help='which test to run')
+    parser.add_argument('--seed', type=int, default=997, help='base seed')
+    parser.add_argument('--sep_thld', type=int, default=9300, help='separating threshold')
+    parser.add_argument('--round_thld', type=int, default=1, help='rounding parameter in SketchSensing')
+    parser.add_argument('--num_frags', type=int, default=300, help='number of fragments in each array')
+    parser.add_argument('--sketch', type=SketchType.from_string, default=SketchType.CM,
+                        choices=list(SketchType), help='sketch type')
+    parser.add_argument('--num_threads', type=int, default=8, help='number of threads')
+    parser.add_argument('--cr_method', type=int, default=4, help='compress method for Cluster Reduce')
+    parser.add_argument('--cfg', type=str, default='config.json', help='path of global config')
+    parser.add_argument('--test', type=str, required=True, help='test case name')
     parser.add_argument('--debug', dest='debug', action='store_true', help='turn on debugging')
     parser.set_defaults(debug=False)
 
     global args
     args = parser.parse_args()
     print(args)
+
+    global global_cfg
+    with open(args.cfg) as f:
+        global_cfg = json.load(f)
 
     init(args)
     globals()[args.test]()

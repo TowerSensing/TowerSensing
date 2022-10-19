@@ -1,7 +1,9 @@
-CXXFLAGS := -O3 -std=c++17 -shared -fPIC $(USER_DEFINES)
-BUILD_DIR := ./lib
+SRC_DIR := src
+BUILD_DIR := ./build
+INCLUDE_FLAGS := -I$(SRC_DIR) -I$(SRC_DIR)/include -I$(SRC_DIR)/tower_sensing
+CXXFLAGS := -O3 -std=c++17 -shared -fPIC $(INCLUDE_FLAGS) $(USER_DEFINES)
 
-ifeq ($(USER_DEFINES), -DSIMD_COMPRESS)
+ifeq ($(findstring -DSIMD_COMPRESS, $(USER_DEFINES)), -DSIMD_COMPRESS)
     CXXFLAGS += -rdynamic -march=native
 endif
 
@@ -16,18 +18,35 @@ all: \
 	$(BUILD_DIR)/ClusterReduceWrapper.so \
 
 # The Count sketch uses int32_t counters
-$(BUILD_DIR)/CountSketch.so: api.cpp
+$(BUILD_DIR)/CountSketch.so: $(SRC_DIR)/sketch_api.cpp
 	@mkdir -p $(BUILD_DIR)
-	g++ $(CXXFLAGS) $< -DSKETCH=CountSketch -DCOUNTER_TYPE=int32_t -o $@
+	$(CXX) $(CXXFLAGS) $< -DSKETCH=CountSketch -DCOUNTER_TYPE=int32_t -o $@
 
 # Other sketches use uint32_t counters
-$(BUILD_DIR)/%.so: api.cpp
+$(BUILD_DIR)/%.so: $(SRC_DIR)/sketch_api.cpp
 	@mkdir -p $(BUILD_DIR)
-	g++ $(CXXFLAGS) $< -DSKETCH=$* -o $@
+	$(CXX) $(CXXFLAGS) $< -DSKETCH=$* -o $@
 
-$(BUILD_DIR)/ClusterReduceWrapper.so: ClusterReduceWrapper.cpp
+$(BUILD_DIR)/ClusterReduceWrapper.so: $(SRC_DIR)/prior_art/cluster_reduce/wrapper.cpp
 	@mkdir -p $(BUILD_DIR)
-	g++ $(CXXFLAGS) $< -o $@
+	$(CXX) $(CXXFLAGS) $< -o $@
+
+
+# Below are extra tests
+$(BUILD_DIR)/test_sensing_flex: extra_tests/test_sensing_flex.cpp
+	$(CXX) $(INCLUDE_FLAGS) $< -o $@
+
+$(BUILD_DIR)/distributed_linear_faster: extra_tests/encrypt_linear_faster.cpp
+	$(CXX) $(INCLUDE_FLAGS) $< -o $@
+
+$(BUILD_DIR)/encrypt_linear_faster: extra_tests/encrypt_linear_faster.cpp
+	$(CXX) $(INCLUDE_FLAGS) $< -o $@
+
+$(BUILD_DIR)/test_tower_shape: extra_tests/test_tower_shape.cpp
+	$(CXX) $(INCLUDE_FLAGS) $< -o $@
+
+$(BUILD_DIR)/test_tower_error: extra_tests/test_tower_error.cpp
+	$(CXX) $(INCLUDE_FLAGS) $< -o $@
 
 clean:
 	rm -rf $(BUILD_DIR)

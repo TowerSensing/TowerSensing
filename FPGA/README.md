@@ -29,7 +29,7 @@ We implement TowerSensing on an FPGA network platform (Virtex-7 VC709). For Towe
 
 
 
-## Our experiments setups
+## Our experimental setups
 
 * Compile: `Vivado 2020.02`
 

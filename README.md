@@ -10,8 +10,18 @@ A Sketch is an excellent probabilistic data structure, which records the approxi
 
 * `CPU` contains codes of TowerSensing and the related algorithms implemented on CPU platforms. 
 
-* `DML` contains codes of TowerSensing and the related algorithms in a simulated distributed machine learning (DML) system. 
+* `APP` contains codes of TowerSensing and the related algorithms in our application experiments. 
 
+    * `APP/distributed_measurement` contains codes of TowerSensing and the realted algorithm in a simulated distributed measurement system. 
+
+    * `APP/distributed_ml` contains codes of TowerSensing and the related algorithm in a simulated distributed machine learning (DML) system. 
+
+    * `APP/join_aggregate` contains codes of TowerSensing and the related algorithm in the task of join-aggregate estimation.
+
+* `Math` contains codes related to our mathematical analysis. 
+
+* `Redis` contains codes of TowerSensing implemented on top of [Redis](https://redis.io/). 
+ 
 * `FPGA` contains codes of TowerSensing implemented on FPGA platforms.
 
 * More details can be found in the folders.
